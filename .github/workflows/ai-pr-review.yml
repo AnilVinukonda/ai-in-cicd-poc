@@ -1,116 +1,55 @@
-name: AI Release Notes
+name: AI PR Review
 
 on:
-  push:
-    tags:
-      - 'v*'             # runs on tag pushes like v0.1.0
-  workflow_dispatch:      # or run manually from the Actions tab
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions:
-  contents: write
+  contents: read
+  pull-requests: write
 
 jobs:
-  ai_notes:
+  ai_pr_review:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Compute commit log
-        id: log
+      - name: Gather PR diff
+        id: diff
         run: |
-          # If it's a tag push, try to diff against the previous tag.
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            tag="${GITHUB_REF#refs/tags/}"
-            echo "Tag push detected: $tag"
-            # Fallback: if no prior tag, just use the last 50 commits
-            prev=$(git describe --tags --abbrev=0 --exclude "$tag" 2>/dev/null || true)
-            if [ -z "$prev" ]; then
-              echo "No previous tag found; using last 50 commits."
-              git log -n 50 --pretty=format:'- %s' > commit_log.txt
-            else
-              echo "Using commits since previous tag $prev"
-              git log "$prev"..HEAD --pretty=format:'- %s' > commit_log.txt
-            fi
-          else
-            echo "Not a tag push; using last 50 commits."
-            git log -n 50 --pretty=format:'- %s' > commit_log.txt
-          fi
-          echo "Commit log lines: $(wc -l < commit_log.txt)"
-          echo "------ commit_log.txt (first 50 lines) ------"
-          sed -n '1,50p' commit_log.txt || true
-          echo "--------------------------------------------"
+          set -euo pipefail
+          git fetch origin ${{ github.base_ref }} --depth=1 || true
+          git diff --unified=0 origin/${{ github.base_ref }}...HEAD > diff.patch || true
+          echo "diff.patch size: $(wc -c < diff.patch) bytes"
+          head -n 20 diff.patch || true
 
       - name: Ensure jq is available
         run: |
           sudo apt-get update
           sudo apt-get install -y jq
 
-      - name: AI Release Notes (OpenAI-compatible)
+      - name: AI Review (OpenAI-compatible API)
         env:
           MODEL_API_BASE: ${{ secrets.MODEL_API_BASE }}
           MODEL_API_KEY:  ${{ secrets.MODEL_API_KEY }}
           MODEL_NAME:     ${{ secrets.MODEL_NAME }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
+          echo "Calling $MODEL_API_BASE with model: $MODEL_NAME"
+          bash scripts/ai_pr_review.sh diff.patch > review.md
+          echo "review.md first lines:"
+          head -n 30 review.md || true
 
-          if [ ! -s commit_log.txt ]; then
-            echo "commit_log.txt is missing or empty; add commits or push a proper tag."
-            exit 1
-          fi
-
-          # Build JSON payload safely using jq
-          SYSTEM_MSG=$(jq -Rs '.' <<< "You turn commit messages into crisp, categorized release notes.")
-          USER_MSG=$(jq -Rs '.' <<< "Create concise release notes grouped by Features, Fixes, Docs, and Chore from these commits/PR titles:\n$(cat commit_log.txt)")
-
-          PAYLOAD=$(jq -n \
-            --arg mdl "$MODEL_NAME" \
-            --arg sys "$(jq -r <<<"$SYSTEM_MSG")" \
-            --arg usr "$(jq -r <<<"$USER_MSG")" \
-            '{
-              model: $mdl,
-              messages: [
-                {role:"system", content: $sys},
-                {role:"user",   content: $usr}
-              ],
-              temperature: 0.2,
-              max_tokens: 600
-            }')
-
-          echo "Calling $MODEL_API_BASE/v1/chat/completions with model: $MODEL_NAME"
-          RESP_BODY=$(mktemp)
-          HTTP_CODE=$(curl -sS -o "$RESP_BODY" -w '%{http_code}' \
-            "$MODEL_API_BASE/v1/chat/completions" \
-            -H "Authorization: Bearer $MODEL_API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD") || { echo "curl failed (network). Body:"; cat "$RESP_BODY" || true; exit 1; }
-
-          echo "HTTP code: $HTTP_CODE"
-          if [ "$HTTP_CODE" -ge 300 ]; then
-            echo "Error response from model API:"
-            cat "$RESP_BODY"
-            exit 1
-          fi
-
-          CONTENT=$(jq -r '.choices[0].message.content // empty' < "$RESP_BODY")
-          if [ -z "$CONTENT" ]; then
-            echo "Model returned no content; full response was:"
-            cat "$RESP_BODY"
-            exit 1
-          fi
-
-          printf "%s\n" "$CONTENT" > RELEASE_NOTES.md
-          echo "Wrote RELEASE_NOTES.md"
-
-          {
-            echo "### Release Notes Preview"
-            echo
-            echo "$CONTENT"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Post PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
         with:
-          name: RELEASE_NOTES
-          path: RELEASE_NOTES.md
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('review.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body
+            });
