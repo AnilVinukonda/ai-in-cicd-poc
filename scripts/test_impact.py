@@ -1,13 +1,22 @@
-import os, sys, subprocess, json, re
+import os, sys, subprocess
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "origin/main"
 HEAD = sys.argv[2] if len(sys.argv) > 2 else "HEAD"
 
-# Get changed files
-diff_cmd = ["git", "diff", "--name-only", f"{BASE}...{HEAD}"]
-changed = subprocess.check_output(diff_cmd, text=True).strip().splitlines()
+def run(cmd):
+    return subprocess.check_output(cmd, text=True).strip()
 
-# Simple heuristic mapping: tests mirror src paths (tests/test_<module>.py)
+changed = []
+try:
+    # Preferred: 3-dot diff BASE...HEAD (needs merge-base)
+    changed = run(["git", "diff", "--name-only", f"{BASE}...{HEAD}"]).splitlines()
+except subprocess.CalledProcessError:
+    # Fallback: last-commit diff
+    try:
+        changed = run(["git", "diff", "--name-only", "HEAD~1..HEAD"]).splitlines()
+    except subprocess.CalledProcessError:
+        changed = []
+
 selected = set()
 for path in changed:
     if path.startswith("src/") and path.endswith(".py"):
@@ -18,6 +27,5 @@ for path in changed:
     if path.startswith("tests/") and path.endswith(".py"):
         selected.add(path)
 
-# Print paths for pytest
 for t in sorted(selected):
     print(t)

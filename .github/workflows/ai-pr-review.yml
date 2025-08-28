@@ -13,13 +13,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # <-- full history so merge-base exists
 
-      - name: Gather PR diff
+      - name: Gather PR diff (robust)
         id: diff
         run: |
           set -euo pipefail
-          git fetch origin ${{ github.base_ref }} --depth=1 || true
-          git diff --unified=0 origin/${{ github.base_ref }}...HEAD > diff.patch || true
+          BASE="${{ github.base_ref }}"
+          git fetch origin "$BASE" --depth=0 || true
+
+          if git merge-base --is-ancestor "origin/$BASE" HEAD; then
+            echo "Using 3-dot diff: origin/$BASE...HEAD"
+            git diff --unified=0 "origin/$BASE...HEAD" > diff.patch || true
+          else
+            echo "No merge-base (shallow?). Using last-commit diff: HEAD~1..HEAD"
+            git diff --unified=0 HEAD~1..HEAD > diff.patch || true
+          fi
+
           echo "diff.patch size: $(wc -c < diff.patch) bytes"
           head -n 20 diff.patch || true
 
@@ -37,7 +48,7 @@ jobs:
           set -euxo pipefail
           echo "Calling $MODEL_API_BASE with model: $MODEL_NAME"
           bash scripts/ai_pr_review.sh diff.patch > review.md
-          echo "review.md first lines:"
+          echo "review.md preview:"
           head -n 30 review.md || true
 
       - name: Post PR comment

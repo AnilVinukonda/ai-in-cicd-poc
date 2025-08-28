@@ -13,21 +13,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # <-- full history fixes "no merge base"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Determine test subset
+
+      - name: Determine test subset (robust)
         id: subset
         run: |
-          git fetch origin ${{ github.base_ref }} --depth=1 || true
-          python scripts/test_impact.py origin/${{ github.base_ref }} HEAD > selected_tests.txt
-          echo "Selected tests:"
+          set -euo pipefail
+          BASE="${{ github.base_ref }}"
+          git fetch origin "$BASE" --depth=0 || true
+
+          # Our script now has a fallback if merge-base is missing
+          python scripts/test_impact.py "origin/$BASE" "HEAD" > selected_tests.txt || true
+
+          echo "Selected tests (if any):"
           cat selected_tests.txt || true
+
       - name: Run tests (subset or full fallback)
         run: |
           if [ -s selected_tests.txt ]; then
