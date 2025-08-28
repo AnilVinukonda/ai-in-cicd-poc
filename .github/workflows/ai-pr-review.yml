@@ -17,18 +17,29 @@ jobs:
       - name: Gather PR diff
         id: diff
         run: |
+          set -euo pipefail
           git fetch origin ${{ github.base_ref }} --depth=1 || true
           git diff --unified=0 origin/${{ github.base_ref }}...HEAD > diff.patch || true
-          echo "Generated diff.patch with size $(wc -c < diff.patch) bytes"
-      
+          echo "diff.patch size: $(wc -c < diff.patch) bytes"
+          head -n 20 diff.patch || true
+
+      - name: Ensure jq is available
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
       - name: AI Review (OpenAI-compatible API)
         env:
           MODEL_API_BASE: ${{ secrets.MODEL_API_BASE }}
-          MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
-          MODEL_NAME: ${{ secrets.MODEL_NAME }}
+          MODEL_API_KEY:  ${{ secrets.MODEL_API_KEY }}
+          MODEL_NAME:     ${{ secrets.MODEL_NAME }}
         run: |
+          set -euxo pipefail
+          echo "Calling $MODEL_API_BASE with model: $MODEL_NAME"
           bash scripts/ai_pr_review.sh diff.patch > review.md
-      
+          echo "review.md first lines:"
+          head -n 30 review.md || true
+
       - name: Post PR comment
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
