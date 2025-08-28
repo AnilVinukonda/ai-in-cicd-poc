@@ -1,0 +1,39 @@
+name: AI Test Impact Analysis
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tia:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Determine test subset
+        id: subset
+        run: |
+          git fetch origin ${{ github.base_ref }} --depth=1 || true
+          python scripts/test_impact.py origin/${{ github.base_ref }} HEAD > selected_tests.txt
+          echo "Selected tests:"
+          cat selected_tests.txt || true
+      - name: Run tests (subset or full fallback)
+        run: |
+          if [ -s selected_tests.txt ]; then
+            echo "Running subset"
+            pytest -q $(cat selected_tests.txt)
+          else
+            echo "No subset determined; running full test suite"
+            pytest -q
+          fi

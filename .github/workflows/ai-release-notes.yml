@@ -1,0 +1,40 @@
+name: AI Release Notes
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ai_notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compute commit log since last tag
+        id: log
+        run: |
+          last_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$last_tag" ]; then
+            echo "No tags found; using last 50 commits."
+            git log -n 50 --pretty=format:'- %s' > commit_log.txt
+          else
+            echo "Using commits since tag $last_tag"
+            git log "$last_tag"..HEAD --pretty=format:'- %s' > commit_log.txt
+          fi
+      - name: AI Release Notes (OpenAI-compatible)
+        env:
+          MODEL_API_BASE: ${{ secrets.MODEL_API_BASE }}
+          MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+          MODEL_NAME: ${{ secrets.MODEL_NAME }}
+        run: |
+          bash scripts/ai_release_notes.sh commit_log.txt > RELEASE_NOTES.md
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RELEASE_NOTES
+          path: RELEASE_NOTES.md

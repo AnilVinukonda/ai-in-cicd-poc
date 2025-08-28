@@ -1,0 +1,62 @@
+name: CD to AWS EKS
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+  ECR_REPO: ${{ vars.ECR_REPO }}
+  IMAGE_TAG: ${{ github.sha }}
+
+permissions:
+  id-token: write    # required for OIDC
+  contents: read
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build, tag, and push image to ECR
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          IMAGE_URI=${REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+          docker build -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+
+      - name: Update Kubernetes manifests with image
+        run: |
+          sed -i "s|IMAGE_URI_PLACEHOLDER|${IMAGE_URI}|g" k8s/deployment.yaml
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
+
+      - name: Deploy to EKS
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
+          # Ingress is optional; requires an ingress controller installed
+          if [ -f k8s/ingress.yaml ]; then kubectl apply -f k8s/ingress.yaml; fi
+
+      - name: Rollout status
+        run: |
+          kubectl -n demo rollouts status deployment/demo-app || kubectl -n demo rollout status deployment/demo-app
